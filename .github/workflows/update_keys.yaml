@@ -1,0 +1,82 @@
+name: Update keys
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Update keys
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8.10.2
+
+      - name: Setup NodeJS environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Get keys
+        run: pnpm getkeys
+
+      - name: Checkout keys branch
+        uses: actions/checkout@v4
+        with:
+          ref: keys
+          path: key_repo
+
+      - name: Update key if it differs
+        run: |
+          file=keys.json
+          cd key_repo
+          echo "Old -> $(cat $file) || New -> $(cat ../$file)"
+          if [[ "$(cat $file)" != "$(cat ../$file)" ]]; then
+            cp ../$file .
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            git config --local user.name "github-actions[bot]"
+            git add $file
+            git commit --amend -m "chore: Updating key"
+            git push --force
+          fi
+
+          # Workaround for CI schedule event, to prevent it's delays (5min ~ 1h!)
+  manual-rerun:
+    name: Re-run workflow
+    permissions:
+      actions: write
+    needs: update
+    # Always run, except when manually cancelled.
+    if: success() || failure()
+    runs-on: ubuntu-latest
+    steps:
+      # Github schedule event would be much easier to use, but it has a terrible
+      # precision, triggering the workflow with more than 10 minutes off the
+      # expected time! And it's even worse at the beginning of every hour 
+      # (which is our case). So we'll use a small hack to make a simple cronjob.
+      - name: Sleep until the next hour at 00m:10s
+        run: |
+          next_date=$(date -d "+1hour" +"%D %H:00:10")
+          next_epoch=$(date -d "$next_date" +%s)
+          current_epoch=$(date +%s)
+          delay=$((next_epoch - current_epoch))
+          sleep $delay
+
+      - name: Re-trigger workflow
+        run: gh workflow run update_keys.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
